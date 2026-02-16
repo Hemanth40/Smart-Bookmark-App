@@ -27,7 +27,7 @@
 
 ## 🌐 Live Demo
 
-> 🔗 **[smart-bookmark-app.vercel.app](#)** *(link will be updated after deployment)*
+> 🔗 **[smart-bookmark-app-xi-ruddy.vercel.app](https://smart-bookmark-app-xi-ruddy.vercel.app)**
 >
 > Sign in with your Google account to test — your bookmarks are private and synced in real-time.
 
@@ -162,66 +162,105 @@ Open [http://localhost:3000](http://localhost:3000) 🎉
 
 ---
 
-## 🐛 Problems & Solutions
+## 🐛 Problems Faced & How I Solved Them
 
 <details>
-<summary><b>1. OAuth Redirect URI Mismatch</b></summary>
+<summary><b>1. Google Sign-In Button Required Two Clicks</b></summary>
 
-**Problem:** Google sign-in failed with `redirect_uri_mismatch` after deploying to Vercel.
+**Problem:** The "Sign in with Google" button had to be clicked twice — the first click did nothing, and only the second click triggered the OAuth redirect.
 
-**Root Cause:** The production URL wasn't registered as an authorized redirect URI.
+**Root Cause:** The sign-in handler was defined as `async () => { await supabase.auth.signInWithOAuth(...) }`. Browsers block redirects from `async` callbacks because they no longer count as a "user gesture" after the first `await`. The first click was consumed by hydration/async setup.
 
-**Fix:** Added `https://<app>.vercel.app/auth/callback` to both Google Cloud Console *and* Supabase redirect URL settings.
+**Fix:** Removed `async/await` from the handler and added `type="button"` to the button element:
+```js
+// Before (broken)
+const handleSignIn = async () => { await supabase.auth.signInWithOAuth({...}) };
+
+// After (fixed)
+const handleSignIn = () => { supabase.auth.signInWithOAuth({...}) };
+```
 
 </details>
 
 <details>
-<summary><b>2. Realtime Events Leaking Between Users</b></summary>
+<summary><b>2. OAuth Callback Not Setting Session Cookies on Redirect</b></summary>
 
-**Problem:** Subscribing to the `bookmarks` table pushed events from *all* users to every client.
+**Problem:** After authenticating with Google, the user was redirected back to the sign-in page instead of the dashboard. They had to click sign-in again to reach the dashboard.
 
-**Root Cause:** No filter was applied on the Realtime channel.
+**Root Cause:** The `/auth/callback` route handler used a shared `createClient()` utility that sets cookies via `cookieStore` from `next/headers`. In a route handler, these cookies are **not automatically attached** to the `NextResponse.redirect()` response, so the session was lost during the redirect.
 
-**Fix:** Applied a user-scoped filter on subscription:
+**Fix:** Rewrote the callback route to create the Supabase client **directly with the response object's cookies**, so session cookies travel with the redirect:
+```js
+const response = NextResponse.redirect(`${origin}/dashboard`);
+const supabase = createServerClient(URL, KEY, {
+  cookies: {
+    getAll() { return request.cookies.getAll(); },
+    setAll(cookiesToSet) {
+      cookiesToSet.forEach(({ name, value, options }) => {
+        response.cookies.set(name, value, options);  // Cookies on the RESPONSE
+      });
+    },
+  },
+});
+```
+
+</details>
+
+<details>
+<summary><b>3. OAuth Redirect URI Mismatch After Vercel Deployment</b></summary>
+
+**Problem:** Google sign-in worked locally but failed on the deployed Vercel URL with a redirect error.
+
+**Root Cause:** Three separate configurations needed to stay in sync:
+1. Google Cloud Console → Authorized redirect URIs
+2. Supabase Dashboard → Authentication → URL Configuration → Site URL
+3. Supabase Dashboard → Authentication → URL Configuration → Redirect URLs
+
+Missing the Vercel callback URL (`https://<app>.vercel.app/auth/callback`) from the Supabase Redirect URLs caused the redirect to fail silently.
+
+**Fix:** Added the Vercel callback URL to Supabase's Redirect URLs list and set the Site URL to the Vercel domain.
+
+</details>
+
+<details>
+<summary><b>4. Duplicate Bookmarks from Realtime + Optimistic Update</b></summary>
+
+**Problem:** Adding a bookmark showed it twice — once immediately from the form's callback and once from the Supabase Realtime INSERT event.
+
+**Root Cause:** Both the form's `onBookmarkAdded` callback and the Realtime subscription's INSERT handler were adding the same bookmark to the React state.
+
+**Fix:** Added deduplication logic that checks by ID before adding:
+```js
+setBookmarks((prev) => {
+  if (prev.some((b) => b.id === payload.new.id)) return prev;
+  return [payload.new, ...prev];
+});
+```
+
+</details>
+
+<details>
+<summary><b>5. Server Component Landing Page Swallowing Button Clicks</b></summary>
+
+**Problem:** The landing page's interactive "Sign in with Google" button occasionally didn't respond on the first click.
+
+**Root Cause:** The landing page was an `async` server component that rendered a client component (`AuthButton`) inside it. Next.js hydrates client components embedded in server components lazily, meaning the first click could be consumed by the hydration process rather than triggering the `onClick` handler.
+
+**Fix:** Extracted the entire landing page UI into a separate `LandingPage.js` client component (`"use client"`), and kept the server `page.js` only for the auth redirect check. This ensures the button is interactive from the moment the page loads.
+
+</details>
+
+<details>
+<summary><b>6. Realtime Events Leaking Between Users</b></summary>
+
+**Problem:** Without proper filtering, the Supabase Realtime subscription would push bookmark events from *all* users to every connected client.
+
+**Root Cause:** The Realtime channel was subscribed to the entire `bookmarks` table without a user-scoped filter.
+
+**Fix:** Applied a filter on the Realtime subscription to only receive events for the authenticated user:
 ```js
 filter: `user_id=eq.${user.id}`
 ```
-
-</details>
-
-<details>
-<summary><b>3. Session Lost Between Pages (App Router)</b></summary>
-
-**Problem:** After Google sign-in, navigating to `/dashboard` sometimes treated the user as unauthenticated.
-
-**Root Cause:** Supabase auth cookies weren't being refreshed on navigation in Next.js App Router.
-
-**Fix:** Added `middleware.js` using `@supabase/ssr` that refreshes the session on every request by syncing cookies between request and response.
-
-</details>
-
-<details>
-<summary><b>4. Duplicate Bookmarks Appearing</b></summary>
-
-**Problem:** Adding a bookmark showed it twice — once from the optimistic update and once from the Realtime event.
-
-**Root Cause:** Both the form callback and the Realtime subscription were adding the same bookmark to state.
-
-**Fix:** Added deduplication in the state setter:
-```js
-if (prev.some(b => b.id === payload.new.id)) return prev;
-```
-
-</details>
-
-<details>
-<summary><b>5. RLS Silently Blocking Inserts</b></summary>
-
-**Problem:** Users couldn't insert bookmarks — the insert returned no error but no data either.
-
-**Root Cause:** The RLS `INSERT` policy uses `WITH CHECK (auth.uid() = user_id)`, but `user_id` wasn't being sent from the client.
-
-**Fix:** Ensured the Supabase client auto-attaches the auth token, and the `user_id` column is populated via the authenticated user's JWT.
 
 </details>
 
