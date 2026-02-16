@@ -5,8 +5,8 @@ import { createClient } from "@/lib/supabase";
 export default function AuthButton({ user = null }) {
     const supabase = createClient();
 
-    const handleSignIn = async () => {
-        await supabase.auth.signInWithOAuth({
+    const handleSignIn = () => {
+        supabase.auth.signInWithOAuth({
             provider: "google",
             options: {
                 redirectTo: `${window.location.origin}/auth/callback`,
@@ -36,6 +36,7 @@ export default function AuthButton({ user = null }) {
                     </span>
                 </div>
                 <button
+                    type="button"
                     onClick={handleSignOut}
                     className="px-4 py-2 text-sm rounded-lg border border-[var(--card-border)] text-[var(--muted)] hover:text-white hover:border-[var(--danger)] hover:bg-[var(--danger)]/10 transition-all duration-200 cursor-pointer"
                 >
@@ -47,6 +48,7 @@ export default function AuthButton({ user = null }) {
 
     return (
         <button
+            type="button"
             onClick={handleSignIn}
             className="w-full flex items-center justify-center gap-3 px-6 py-3.5 rounded-xl bg-white text-gray-800 font-medium hover:bg-gray-100 transition-all duration-200 shadow-md hover:shadow-lg cursor-pointer"
         >
