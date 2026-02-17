@@ -29,9 +29,12 @@ export default function BookmarkForm({ onBookmarkAdded }) {
 
         setLoading(true);
 
+        // Get the current user's ID for RLS policy
+        const { data: { user } } = await supabase.auth.getUser();
+
         const { data, error: insertError } = await supabase
             .from("bookmarks")
-            .insert([{ url: url.trim(), title: title.trim() }])
+            .insert([{ url: url.trim(), title: title.trim(), user_id: user.id }])
             .select()
             .single();
 
